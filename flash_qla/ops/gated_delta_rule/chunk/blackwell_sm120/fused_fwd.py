@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 
 from flash_qla.utils import prepare_chunk_offsets
+from flash_qla.utils.state import final_state_buffer
 
 
 MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
@@ -661,6 +662,7 @@ def fused_gdr_fwd(
     cp_seq_map: torch.LongTensor | None = None,
     raw_cu_seqlens: torch.LongTensor | None = None,
     state_v_first: bool = False,
+    final_state_out: torch.Tensor | None = None,
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
@@ -668,7 +670,7 @@ def fused_gdr_fwd(
     scale = scale or K ** (-0.5)
     assert K == V == 128
     assert chunk_size == 32
-    output_final_state = output_final_state or False
+    output_final_state = output_final_state or final_state_out is not None
     output_h = output_h or False
     output_o = output_o if output_o is not None else True
 
@@ -721,20 +723,20 @@ def fused_gdr_fwd(
         raw_cu_seqlens = torch.empty(
             (real_batch_size + 1,), dtype=seqlen_dtype, device=k.device
         )
-        final_state = torch.empty(
+        final_state = final_state_buffer(
+            final_state_out,
             (real_batch_size, H, V, K)
             if state_v_first
             else (real_batch_size, H, K, V),
-            dtype=torch.float32,
-            device=k.device,
+            initial_state, shared_initial_state, is_cp, k.device,
         )
     else:
-        final_state = torch.empty(
+        final_state = final_state_buffer(
+            final_state_out,
             (raw_cu_seqlens.shape[0] - 1, H, V, K)
             if state_v_first
             else (raw_cu_seqlens.shape[0] - 1, H, K, V),
-            dtype=torch.float32,
-            device=k.device,
+            initial_state, shared_initial_state, is_cp, k.device,
         )
     # Valid tokens are fully overwritten by the fused kernel.  In varlen mode
     # the final sequence CTA also clears only the actual backing-buffer tail,

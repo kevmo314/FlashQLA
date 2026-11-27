@@ -379,3 +379,50 @@ def test_bwd_deterministic(
         assert_relative(db_i, db_ref, f"db iter {i}")
         if dht_ref is not None:
             assert_relative(dh0_i, dh0_ref, f"dh0 iter {i}")
+
+
+# (B, T, Hk, Hv, varlen, cu_seqlens)
+FINAL_STATE_OUT_CONFIGS = [
+    pytest.param(2, 200, 4, 8, False, None, id="dense-B2"),
+    pytest.param(1, 300, 4, 8, True, [0, 64, 129, 300], id="vl-3seq"),
+]
+
+
+@pytest.mark.parametrize("B,T,Hk,Hv,varlen,cu_seqlens_list", FINAL_STATE_OUT_CONFIGS)
+@pytest.mark.parametrize("alias", [False, True], ids=["buffer", "in_place"])
+def test_final_state_out(B, T, Hk, Hv, varlen, cu_seqlens_list, alias):
+    """final_state_out receives exactly the final state the forward returns
+    otherwise, also when it is the initial state's own buffer."""
+    from flash_qla import chunk_gated_delta_rule
+
+    q, k, v, g, beta, _, _, _, h0, _, cu_seqlens, _ = make_inputs(
+        B, T, Hk, Hv, varlen, cu_seqlens_list, True, False
+    )
+    with torch.no_grad():
+        o_want, s_want = chunk_gated_delta_rule(
+            q, k, v, g, beta, initial_state=h0.clone(), output_final_state=True,
+            cu_seqlens=cu_seqlens, auto_cp=False,
+        )
+        h0_in = h0.clone()
+        out = h0_in if alias else torch.empty_like(h0)
+        o, s = chunk_gated_delta_rule(
+            q, k, v, g, beta, initial_state=h0_in, final_state_out=out,
+            cu_seqlens=cu_seqlens, auto_cp=False,
+        )
+    assert s.data_ptr() == out.data_ptr()
+    assert torch.equal(o, o_want)
+    assert torch.equal(out, s_want)
+
+
+def test_final_state_out_rejects_a_shared_initial_state():
+    from flash_qla import chunk_gated_delta_rule
+
+    q, k, v, g, beta, _, _, _, h0, _, cu_seqlens, _ = make_inputs(
+        1, 300, 4, 8, True, [0, 64, 129, 300], True, False
+    )
+    shared = h0[:1].clone()
+    with torch.no_grad(), pytest.raises(ValueError):
+        chunk_gated_delta_rule(
+            q, k, v, g, beta, initial_state=shared, final_state_out=shared,
+            cu_seqlens=cu_seqlens, auto_cp=False,
+        )

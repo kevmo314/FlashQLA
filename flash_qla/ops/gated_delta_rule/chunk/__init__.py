@@ -79,6 +79,7 @@ def chunk_gated_delta_rule_fwd(
     enable_fwd_cp_cache: bool = False,
     cp_context: FlashQLACPContext | None = None,
     is_train: bool | None = None,
+    final_state_out: torch.Tensor | None = None,
 ):
     if is_train is None:
         is_train = bool(enable_fwd_cp_cache)
@@ -125,6 +126,7 @@ def chunk_gated_delta_rule_fwd(
         cp_seq_map=cp_context.seq_map_c2r,
         raw_cu_seqlens=cp_context.cu_seqlens,
         state_v_first=state_v_first,
+        final_state_out=final_state_out,
     )
     return g, A, o, h, final_state, cp_cache
 
@@ -233,6 +235,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         cp_context=None,
         force_intra_cp: bool = False,
         is_train: bool = False,
+        final_state_out: torch.Tensor | None = None,
     ):
         q_rstd, k_rstd = None, None
         if use_qk_l2norm_in_kernel:
@@ -262,6 +265,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             enable_fwd_cp_cache=enable_fwd_cp_cache,
             cp_context=cp_context,
             is_train=is_train,
+            final_state_out=final_state_out,
         )
 
         ctx.save_for_backward(q, k, q_rstd, k_rstd, v, g, beta, A, initial_state, cu_seqlens)
@@ -318,6 +322,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             None,          # cp_context
             None,          # force_intra_cp
             None,          # is_train
+            None,          # final_state_out
         )
 
 
@@ -339,6 +344,7 @@ def chunk_gated_delta_rule(
     enable_fwd_cp_cache: bool = True,
     cp_context=None,
     force_intra_cp: bool = False,
+    final_state_out: torch.Tensor | None = None,
 ):
     r"""
     Args:
@@ -383,6 +389,12 @@ def chunk_gated_delta_rule(
             Whether to bypass the intra-card CP decision and always split. Ignored when
             `auto_cp=False` (which disables intra CP outright) or when an explicit
             `cp_context` is passed. Intended for tests and profiling. Default: `False`.
+        final_state_out (Optional[torch.Tensor]):
+            A contiguous float32 tensor of the final state's shape to write the final
+            state to (implies `output_final_state`), e.g. a cache's state, instead of
+            a new tensor the caller would copy. It may be `initial_state` itself,
+            unless that is one initial state shared by every sequence. Inference only:
+            a backward pass needs the initial state. Default: `None`.
 
     Returns:
         o (torch.Tensor):
@@ -457,6 +469,12 @@ def chunk_gated_delta_rule(
         for t in (q, k, v, g, beta, initial_state)
     )
     enable_fwd_cp_cache = bool(enable_fwd_cp_cache) and is_train
+    if final_state_out is not None:
+        if is_train:
+            raise ValueError("final_state_out is for inference: a backward pass needs the initial state")
+        if not final_state_out.is_contiguous():
+            # input_guard would hand the kernel a contiguous copy to write instead.
+            raise ValueError("final_state_out must be contiguous")
 
     o, final_state = ChunkGatedDeltaRuleFunction.apply(
         q,
@@ -475,6 +493,7 @@ def chunk_gated_delta_rule(
         cp_context,
         force_intra_cp,
         is_train,
+        final_state_out,
     )
 
     return o, final_state
