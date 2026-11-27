@@ -44,6 +44,7 @@ def tilelang_fused_chunk_gdr_fwd(
     is_cp,
     state_v_first,
     block_DV=128,
+    shared_initial_state=False,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
@@ -87,10 +88,12 @@ def tilelang_fused_chunk_gdr_fwd(
             if state_v_first
             else (batch_size, num_chunks, H, DK, DV)
         )
+    # shared_initial_state: one initial state, read by every sequence.
+    h0_batch_size = 1 if shared_initial_state else batch_size
     h0_shape = (
-        (batch_size, H, DV, DK)
+        (h0_batch_size, H, DV, DK)
         if state_v_first
-        else (batch_size, H, DK, DV)
+        else (h0_batch_size, H, DK, DV)
     )
     ht_shape = (
         (raw_batch_size, H, DV, DK)
@@ -245,20 +248,20 @@ def tilelang_fused_chunk_gdr_fwd(
                 if block_DV == 128:
                     if use_initial_state:
                         if state_v_first:
-                            T.copy(h0[bb, bh, :64, 0:DK], h_fragment_L)
-                            T.copy(h0[bb, bh, 64:, 0:DK], h_fragment_R)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, :64, 0:DK], h_fragment_L)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, 64:, 0:DK], h_fragment_R)
                         else:
-                            T.copy(h0[bb, bh, 0:DK, :64], h_fragment_L)
-                            T.copy(h0[bb, bh, 0:DK, 64:], h_fragment_R)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, 0:DK, :64], h_fragment_L)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, 0:DK, 64:], h_fragment_R)
                     else:
                         T.clear(h_fragment_L)
                         T.clear(h_fragment_R)
                 else:
                     if use_initial_state:
                         if state_v_first:
-                            T.copy(h0[bb, bh, DV_start:DV_end, 0:DK], h_fragment)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, DV_start:DV_end, 0:DK], h_fragment)
                         else:
-                            T.copy(h0[bb, bh, 0:DK, DV_start:DV_end], h_fragment)
+                            T.copy(h0[0 if shared_initial_state else bb, bh, 0:DK, DV_start:DV_end], h_fragment)
                     else:
                         T.clear(h_fragment)
 
@@ -897,6 +900,9 @@ def fused_gdr_fwd(
         is_cp = True
 
     use_initial_state = initial_state is not None
+    shared_initial_state = (
+        use_initial_state and real_batch_size > 1 and initial_state.shape[0] == 1
+    )
     if initial_state is None:
         initial_state = torch.empty(
             (real_batch_size, H, V, K)
@@ -960,6 +966,7 @@ def fused_gdr_fwd(
         is_cp=is_cp,
         state_v_first=state_v_first,
         block_DV=block_DV,
+        **({"shared_initial_state": True} if shared_initial_state else {}),
     )
     tilelang_fused_chunk_gdr_fwd_kernel(
         q,

@@ -443,9 +443,9 @@ def chunk_gated_delta_rule(
                 f"The batch size is expected to be 1 rather than {q.shape[0]} when using `cu_seqlens`."
                 f"Please flatten variable-length inputs before processing."
             )
-        if initial_state is not None and initial_state.shape[0] != len(cu_seqlens) - 1:
+        if initial_state is not None and initial_state.shape[0] not in (1, len(cu_seqlens) - 1):
             raise ValueError(
-                f"The number of initial states is expected to be equal to the number of input sequences, "
+                f"The number of initial states is expected to be 1 (shared) or the number of input sequences, "
                 f"i.e., {len(cu_seqlens) - 1} rather than {initial_state.shape[0]}."
             )
 
